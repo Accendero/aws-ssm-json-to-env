@@ -1,0 +1,65 @@
+# action.yml
+name: 'AWS SSM JSON to Env'
+description: 'Collect environment variables from AWS SSM Parameter Store'
+
+branding:
+  icon: 'settings'
+  color: 'orange'
+
+inputs:
+  access_key_id:
+    description: 'AWS Access Key ID'
+    required: false
+  secret_access_key:
+    description: 'AWS Secret Access Key'
+    required: false
+  region:
+    description: 'AWS Region'
+    required: false
+  parameter_name:
+    description: 'Parameter name, e.g. /my-project/config/cicd'
+    required: false
+  pgp_passphrase:
+    description: 'PGP passphrase, used for encrypting the parameters'
+    required: true
+  decrypt:
+    description: 'Decrypt and export given environment variable string'
+    required: false
+
+outputs:
+  encrypted_environment:
+    description: The encrypted environment variables
+    value: ${{ steps.get_environment.outputs.encrypted_environment }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      id: validate
+      shell: bash
+      run: |
+        if [[ -z "${{ inputs.access_key_id }}" && -z "${{ inputs.secret_access_key }}" && -z "${{ inputs.region }}" && -z "${{ inputs.parameter_name }}" && -z "${{ inputs.decrypt }}" ]]; then
+          echo "::error::Either access_key_id, secret_access_key, region and parameter_name must be set, or decrypt must be set"
+          exit 1
+        fi
+    - name: Collect environment
+      id: get_environment
+      shell: bash
+      run: |
+        if [[ -z "${{ inputs.decrypt }}" ]]; then
+          echo "Collecting environment from AWS SSM Parameter Store"
+          SET_ENV=$(AWS_ACCESS_KEY_ID=${{ inputs.access_key_id }} \
+            AWS_SECRET_ACCESS_KEY=${{ inputs.secret_access_key }} \
+            AWS_DEFAULT_REGION=${{ inputs.region }} \
+            aws ssm get-parameter --name "${{ inputs.parameter_name }}" --with-decryption --output text --query Parameter.Value --output text \
+            | jq -r 'keys[] as $k | "\($k)=\(.[$k])"')
+          ENC_SET_ENV=$(gpg --symmetric --batch --passphrase "$SECRET" --output - <(echo "$SET_ENV") | base64 -w0)
+          echo "::set-output name=encrypted_environment::$ENC_SET_ENV"
+        else
+          echo "Decrypting environment"
+          gpg --decrypt --quiet --batch --passphrase "$SECRET" \
+          --output - <(echo "${{ inputs.decrypt }}" | base64 --decode) \
+          | while read line ; do mask=$(cut -d "=" -f2- <<< $line) && echo "::add-mask::${mask}" && echo $line >> $GITHUB_ENV ; done
+        fi
+      env:
+        SECRET: ${{ inputs.pgp_passphrase }}
