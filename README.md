@@ -62,6 +62,8 @@ with:
 * `decrypt` - The value of an encrypted environment variables string. Passing this
   in will decrypt the variables and set then in the environment for the current
   job.
+* `masks` - A comma separated list of environment variable names to mask in the
+  logs. This is useful for sensitive information like passwords or API keys.
 
 ### Outputs
 
@@ -107,6 +109,7 @@ jobs:
           region: ${{ secrets.AWS_DEFAULT_REGION }}
           parameter_name: "/my-project/config/cicd"
           pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+          masks: "MY_OTHER_ENV_VAR"
 
   print_a_variable:
     runs-on: ubuntu-latest

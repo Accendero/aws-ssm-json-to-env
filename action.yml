@@ -25,6 +25,9 @@ inputs:
   decrypt:
     description: 'Decrypt and export given environment variable string'
     required: false
+  masks:
+    description: 'Comma separated list of environment variables to mask'
+    required: false
 
 outputs:
   encrypted_environment:
@@ -46,6 +49,10 @@ runs:
       id: get_environment
       shell: bash
       run: |
+        masked=()
+        if [[ -z "${{ inputs.masks }}" ]]; then
+          IFS=',' read -r -a masked <<< "${{ inputs.masks }}"
+        fi
         if [[ -z "${{ inputs.decrypt }}" ]]; then
           echo "Collecting environment from AWS SSM Parameter Store"
           SET_ENV=$(AWS_ACCESS_KEY_ID=${{ inputs.access_key_id }} \
@@ -59,7 +66,18 @@ runs:
           echo "Decrypting environment"
           gpg --decrypt --quiet --batch --passphrase "$SECRET" \
           --output - <(echo "${{ inputs.decrypt }}" | base64 --decode) \
-          | while read line ; do mask=$(cut -d "=" -f2- <<< $line) && echo "::add-mask::${mask}" && echo $line >> $GITHUB_ENV ; done
+          | while read line
+            do 
+              varname=$(cut -d "=" -f1- <<< $line) 
+              mask=$(cut -d "=" -f2- <<< $line)
+              if [[ " ${masked[@]} " =~ " ${varname} " || " ${masked[@]} " =~ " \$${varname} " ]]; then
+                echo "Masking $varname"
+                echo "::add-mask::$mask"
+              else
+                echo "Not masking $varname, it is not in ${masked[@]}"
+              fi
+              echo $line >> $GITHUB_ENV
+            done
         fi
       env:
         SECRET: ${{ inputs.pgp_passphrase }}
