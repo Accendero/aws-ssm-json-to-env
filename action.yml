@@ -54,7 +54,7 @@ runs:
             aws ssm get-parameter --name "${{ inputs.parameter_name }}" --with-decryption --output text --query Parameter.Value --output text \
             | jq -r 'keys[] as $k | "\($k)=\(.[$k])"')
           ENC_SET_ENV=$(gpg --symmetric --batch --passphrase "$SECRET" --output - <(echo "$SET_ENV") | base64 -w0)
-          echo "::set-output name=encrypted_environment::$ENC_SET_ENV"
+          echo "encrypted_environment=$ENC_SET_ENV" >> $GITHUB_OUTPUT
         else
           echo "Decrypting environment"
           gpg --decrypt --quiet --batch --passphrase "$SECRET" \
