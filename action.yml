@@ -25,6 +25,9 @@ inputs:
   decrypt:
     description: 'Decrypt and export given environment variable string'
     required: false
+  parameter_version:
+    description: 'Version of the SSM parameter to retrieve'
+    required: false
 
 outputs:
   encrypted_environment:
@@ -51,7 +54,7 @@ runs:
           SET_ENV=$(AWS_ACCESS_KEY_ID=${{ inputs.access_key_id }} \
             AWS_SECRET_ACCESS_KEY=${{ inputs.secret_access_key }} \
             AWS_DEFAULT_REGION=${{ inputs.region }} \
-            aws ssm get-parameter --name "${{ inputs.parameter_name }}" --with-decryption --output text --query Parameter.Value --output text \
+            aws ssm get-parameter --name "${{ inputs.parameter_name }}" --with-decryption --output text --query Parameter.Value --output text --version "${{ inputs.parameter_version }}" \ 
             | jq -r 'keys[] as $k | "\($k)=\(.[$k])"')
           ENC_SET_ENV=$(gpg --symmetric --batch --passphrase "$SECRET" --output - <(echo "$SET_ENV") | base64 -w0)
           echo "encrypted_environment=$ENC_SET_ENV" >> $GITHUB_OUTPUT
