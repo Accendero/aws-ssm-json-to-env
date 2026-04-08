@@ -42,6 +42,42 @@ jobs:
           fi
           echo "Validation correctly failed without parameter_name"
 
+      - name: Test - should fail with only access_key_id
+        id: only-access-key
+        continue-on-error: true
+        uses: ./
+        with:
+          access_key_id: "test-key"
+          region: us-east-1
+          parameter_name: "/test/param"
+          pgp_passphrase: "test-passphrase"
+
+      - name: Verify validation failed for partial credentials (access_key only)
+        run: |
+          if [[ "${{ steps.only-access-key.outcome }}" == "success" ]]; then
+            echo "::error::Should have failed with only access_key_id"
+            exit 1
+          fi
+          echo "Validation correctly failed with only access_key_id"
+
+      - name: Test - should fail with only secret_access_key
+        id: only-secret-key
+        continue-on-error: true
+        uses: ./
+        with:
+          secret_access_key: "test-secret"
+          region: us-east-1
+          parameter_name: "/test/param"
+          pgp_passphrase: "test-passphrase"
+
+      - name: Verify validation failed for partial credentials (secret_key only)
+        run: |
+          if [[ "${{ steps.only-secret-key.outcome }}" == "success" ]]; then
+            echo "::error::Should have failed with only secret_access_key"
+            exit 1
+          fi
+          echo "Validation correctly failed with only secret_access_key"
+
   test-decrypt:
     runs-on: ubuntu-latest
     steps:
