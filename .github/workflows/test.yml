@@ -1,0 +1,113 @@
+name: Test Action
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test - should fail without region
+        id: no-region
+        continue-on-error: true
+        uses: ./
+        with:
+          parameter_name: "/test/param"
+          pgp_passphrase: "test-passphrase"
+
+      - name: Verify validation failed for missing region
+        run: |
+          if [[ "${{ steps.no-region.outcome }}" == "success" ]]; then
+            echo "::error::Should have failed without region"
+            exit 1
+          fi
+          echo "Validation correctly failed without region"
+
+      - name: Test - should fail without parameter_name
+        id: no-param
+        continue-on-error: true
+        uses: ./
+        with:
+          region: us-east-1
+          pgp_passphrase: "test-passphrase"
+
+      - name: Verify validation failed for missing parameter_name
+        run: |
+          if [[ "${{ steps.no-param.outcome }}" == "success" ]]; then
+            echo "::error::Should have failed without parameter_name"
+            exit 1
+          fi
+          echo "Validation correctly failed without parameter_name"
+
+  test-decrypt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create test encrypted payload
+        id: create-payload
+        run: |
+          # Create a test environment payload and encrypt it
+          TEST_ENV="TEST_VAR=hello_world
+          ANOTHER_VAR=foo_bar"
+          ENC=$(gpg --symmetric --batch --passphrase "test-passphrase" --output - <(echo "$TEST_ENV") | base64 -w0)
+          echo "encrypted=$ENC" >> $GITHUB_OUTPUT
+
+      - name: Test decrypt functionality
+        uses: ./
+        with:
+          pgp_passphrase: "test-passphrase"
+          decrypt: ${{ steps.create-payload.outputs.encrypted }}
+
+      - name: Verify decrypted environment variables
+        run: |
+          if [[ "$TEST_VAR" != "hello_world" ]]; then
+            echo "::error::TEST_VAR not set correctly, got: $TEST_VAR"
+            exit 1
+          fi
+          if [[ "$ANOTHER_VAR" != "foo_bar" ]]; then
+            echo "::error::ANOTHER_VAR not set correctly, got: $ANOTHER_VAR"
+            exit 1
+          fi
+          echo "Decrypt test passed!"
+
+  # Integration test - requires AWS credentials
+  # Run with: act -j test-ssm-fetch -s AWS_ACCESS_KEY_ID=xxx -s AWS_SECRET_ACCESS_KEY=xxx -s AWS_REGION=xxx -s SSM_PARAMETER_NAME=xxx
+  # This job only runs on workflow_dispatch (manual trigger)
+  test-ssm-fetch:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch from SSM with credentials
+        id: fetch
+        uses: ./
+        with:
+          access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          region: ${{ secrets.AWS_REGION }}
+          parameter_name: ${{ secrets.SSM_PARAMETER_NAME }}
+          pgp_passphrase: "test-passphrase"
+
+      - name: Verify encrypted output exists
+        run: |
+          if [[ -z "${{ steps.fetch.outputs.encrypted_environment }}" ]]; then
+            echo "::error::No encrypted output produced"
+            exit 1
+          fi
+          echo "SSM fetch test passed!"
+
+      - name: Decrypt and verify
+        uses: ./
+        with:
+          pgp_passphrase: "test-passphrase"
+          decrypt: ${{ steps.fetch.outputs.encrypted_environment }}
+
+      - name: Show that env vars are set (masked)
+        run: |
+          echo "Environment variables have been set and masked"
+          env | grep -c "=" || true
