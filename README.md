@@ -17,6 +17,8 @@ could potentially overwrite existing environment variables.**
   - [Storing the SSM parameters as JSON](#storing-the-ssm-parameters-as-json)
   - [Example Workflow](#example-workflow)
   - [Example Workflow with OIDC](#example-workflow-with-oidc)
+- [Development](#development)
+  - [Running Tests Locally](#running-tests-locally)
 
 ## Usage
 
@@ -184,4 +186,86 @@ jobs:
            decrypt: ${{ needs.setup.outputs.encrypted_environment }}
            pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
       - run: echo "${{ env.MY_ENV_VAR }}, ${{ env.MY_OTHER_ENV_VAR }}"
+```
+
+## Development
+
+### Running tests locally
+
+This project uses [act](https://github.com/nektos/act) to run GitHub Actions locally.
+
+#### Install act
+
+If you follow the linux instructions below, it may install to the local directory you are running the installation
+command from, and the resulting binary will be in `./bin/act`. You can move this to a directory in your PATH or add the 
+local directory to your PATH to run `act` from anywhere.
+
+Additionally, act requires docker to run the GitHub Actions locally, so make sure you have Docker installed and 
+running on your machine.
+
+```bash
+# macOS
+brew install act
+
+# Linux
+curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+
+# Other methods: https://github.com/nektos/act#installation
+```
+
+#### Configure act
+
+Run the setup script to generate `.actrc` with the correct Docker socket path for your system:
+
+```bash
+./setup-act.sh
+```
+
+This will auto-detect your Docker socket location (works with Docker Desktop and standard installations).
+
+#### Run tests
+
+The test suite includes validation tests and decrypt tests that don't require AWS
+credentials, plus an integration test that requires real AWS access.
+
+```bash
+# Run validation tests (no AWS credentials needed)
+act -j test-validation
+
+# Run decrypt tests (no AWS credentials needed)
+act -j test-decrypt
+
+# Run both validation and decrypt tests
+act -j test-validation -j test-decrypt
+```
+
+#### Run integration tests with AWS
+
+To run the SSM integration tests, you need AWS credentials and a test parameter.
+
+1. Copy the secrets example file:
+   ```bash
+   cp .secrets.example .secrets
+   ```
+
+2. Edit `.secrets` with your AWS credentials and test parameter:
+   ```
+   AWS_ACCESS_KEY_ID=your-access-key-id
+   AWS_SECRET_ACCESS_KEY=your-secret-access-key
+   AWS_REGION=us-east-1
+   SSM_PARAMETER_NAME=/test/parameters
+   ```
+
+3. Run the integration test:
+   ```bash
+   act -j test-ssm-fetch --secret-file .secrets
+   ```
+
+Alternatively, pass secrets directly:
+```bash
+act -j test-ssm-fetch \
+  -s AWS_ACCESS_KEY_ID=xxx \
+  -s AWS_SECRET_ACCESS_KEY=xxx \
+  -s AWS_REGION=us-east-1 \
+  -s SSM_PARAMETER_NAME=/your/test/param
 ```      
