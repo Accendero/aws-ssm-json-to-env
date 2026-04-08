@@ -8,10 +8,10 @@ branding:
 
 inputs:
   access_key_id:
-    description: 'AWS Access Key ID'
+    description: 'AWS Access Key ID (optional if using OIDC or existing session)'
     required: false
   secret_access_key:
-    description: 'AWS Secret Access Key'
+    description: 'AWS Secret Access Key (optional if using OIDC or existing session)'
     required: false
   region:
     description: 'AWS Region'
@@ -38,9 +38,12 @@ runs:
       id: validate
       shell: bash
       run: |
-        if [[ -z "${{ inputs.access_key_id }}" && -z "${{ inputs.secret_access_key }}" && -z "${{ inputs.region }}" && -z "${{ inputs.parameter_name }}" && -z "${{ inputs.decrypt }}" ]]; then
-          echo "::error::Either access_key_id, secret_access_key, region and parameter_name must be set, or decrypt must be set"
-          exit 1
+        if [[ -z "${{ inputs.decrypt }}" ]]; then
+          # Fetching mode: require region and parameter_name (credentials are optional if using existing session)
+          if [[ -z "${{ inputs.region }}" || -z "${{ inputs.parameter_name }}" ]]; then
+            echo "::error::When fetching from SSM, region and parameter_name are required"
+            exit 1
+          fi
         fi
     - name: Collect environment
       id: get_environment
@@ -48,10 +51,11 @@ runs:
       run: |
         if [[ -z "${{ inputs.decrypt }}" ]]; then
           echo "Collecting environment from AWS SSM Parameter Store"
-          SET_ENV=$(AWS_ACCESS_KEY_ID=${{ inputs.access_key_id }} \
-            AWS_SECRET_ACCESS_KEY=${{ inputs.secret_access_key }} \
-            AWS_DEFAULT_REGION=${{ inputs.region }} \
-            aws ssm get-parameter --name "${{ inputs.parameter_name }}" --with-decryption --output text --query Parameter.Value --output text \
+          # Only set credentials if provided, otherwise use existing session (e.g., OIDC)
+          [[ -n "${{ inputs.access_key_id }}" ]] && export AWS_ACCESS_KEY_ID="${{ inputs.access_key_id }}"
+          [[ -n "${{ inputs.secret_access_key }}" ]] && export AWS_SECRET_ACCESS_KEY="${{ inputs.secret_access_key }}"
+          export AWS_DEFAULT_REGION="${{ inputs.region }}"
+          SET_ENV=$(aws ssm get-parameter --name "${{ inputs.parameter_name }}" --with-decryption --output text --query Parameter.Value --output text \
             | jq -r 'keys[] as $k | "\($k)=\(.[$k])"')
           ENC_SET_ENV=$(gpg --symmetric --batch --passphrase "$SECRET" --output - <(echo "$SET_ENV") | base64 -w0)
           echo "encrypted_environment=$ENC_SET_ENV" >> $GITHUB_OUTPUT
