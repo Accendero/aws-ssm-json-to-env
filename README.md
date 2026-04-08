@@ -8,13 +8,15 @@ JSON object with string values.
 could potentially overwrite existing environment variables.**
 
 - [Usage](#usage)
-  - [Fetching Parameters](#fetching-parameters) 
+  - [Fetching Parameters](#fetching-parameters)
+  - [Fetching Parameters with OIDC](#fetching-parameters-with-oidc)
   - [Decrypt and exporting](#decrypt-and-exporting)
   - [Inputs](#inputs)
   - [Outputs](#outputs)
 - [Examples](#examples)
   - [Storing the SSM parameters as JSON](#storing-the-ssm-parameters-as-json)
   - [Example Workflow](#example-workflow)
+  - [Example Workflow with OIDC](#example-workflow-with-oidc)
 
 ## Usage
 
@@ -28,7 +30,7 @@ The example below will fetch the parameters from SSM and create an encrypted
 string as an output for use in other jobs or steps.
 
 ```yaml
-uses: accendero/aws-ssm-json-to-env@v1
+uses: accendero/aws-ssm-json-to-env@v2
 id: <step id 1>
 with:
   access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -38,13 +40,33 @@ with:
   pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
 ```
 
+### Fetching parameters with OIDC
+
+If you're using OIDC authentication (via `aws-actions/configure-aws-credentials`),
+you can omit the `access_key_id` and `secret_access_key` inputs. The action will
+use the existing AWS session credentials.
+
+```yaml
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: arn:aws:iam::123456789012:role/my-github-actions-role
+    aws-region: us-east-1
+
+- uses: accendero/aws-ssm-json-to-env@v2
+  id: <step id 1>
+  with:
+    region: us-east-1
+    parameter_name: "/my-project/config/cicd"
+    pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+```
+
 ### Decrypt and exporting
 
 The example below will decrypt a previously fetched SSM environment and export
 its variables to the current job's environment.
 
 ```yaml
-uses: accendero/aws-ssm-json-to-env@v1
+uses: accendero/aws-ssm-json-to-env@v2
 id: <step id 2>
 with:
   pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
@@ -53,10 +75,10 @@ with:
 
 ### Inputs
 
-* `access_key_id` - AWS access key ID
-* `secret_access_key` - AWS secret access key
-* `region` - AWS region
-* `parameter_name` - Name of the parameter to fetch
+* `access_key_id` - AWS access key ID (optional if using OIDC or existing session)
+* `secret_access_key` - AWS secret access key (optional if using OIDC or existing session)
+* `region` - AWS region (required when fetching parameters)
+* `parameter_name` - Name of the parameter to fetch (required when fetching parameters)
 * `pgp_passphrase` - Passphrase to encrypt the environment variables
 * **TODO**: `parameter_version` - Version of the parameter to fetch, latest is used by default
 * `decrypt` - The value of an encrypted environment variables string. Passing this
@@ -99,7 +121,7 @@ jobs:
       encrypted_environment: ${{ steps.ssm.outputs.encrypted_environment }}
     steps:
       - uses: actions/checkout@v1
-      - uses: accendero/aws-ssm-json-to-env@v1
+      - uses: accendero/aws-ssm-json-to-env@v2
         id: ssm
         with:
           access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -113,7 +135,51 @@ jobs:
     needs: setup
     steps:
       - uses: actions/checkout@v1
-      - uses: accendero/aws-ssm-json-to-env@v1
+      - uses: accendero/aws-ssm-json-to-env@v2
+        with:
+           decrypt: ${{ needs.setup.outputs.encrypted_environment }}
+           pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+      - run: echo "${{ env.MY_ENV_VAR }}, ${{ env.MY_OTHER_ENV_VAR }}"
+```
+
+### Example workflow with OIDC
+
+This workflow uses OIDC authentication instead of static access keys. You'll need
+to configure an IAM role with a trust policy for GitHub Actions OIDC.
+
+```yaml
+name: Deploy to environment
+
+on: push
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      encrypted_environment: ${{ steps.ssm.outputs.encrypted_environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/my-github-actions-role
+          aws-region: us-east-1
+      - uses: accendero/aws-ssm-json-to-env@v2
+        id: ssm
+        with:
+          region: us-east-1
+          parameter_name: "/my-project/config/cicd"
+          pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+
+  print_a_variable:
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: accendero/aws-ssm-json-to-env@v2
         with:
            decrypt: ${{ needs.setup.outputs.encrypted_environment }}
            pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
