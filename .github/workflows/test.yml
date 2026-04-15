@@ -8,7 +8,7 @@ jobs:
   test-validation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Test - should fail without region
         id: no-region
@@ -78,10 +78,28 @@ jobs:
           fi
           echo "Validation correctly failed with only secret_access_key"
 
+      - name: Test - should fail with invalid scope
+        id: invalid-scope
+        continue-on-error: true
+        uses: ./
+        with:
+          region: us-east-1
+          parameter_name: "/test/param"
+          pgp_passphrase: "test-passphrase"
+          scope: invalid-option
+
+      - name: Verify validation failed for invalid scope
+        run: |
+          if [[ "${{ steps.invalid-scope.outcome }}" == "success" ]]; then
+            echo "::error::Should have failed with invalid scope"
+            exit 1
+          fi
+          echo "Validation correctly failed with invalid scope"
+
   test-decrypt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Create test encrypted payload
         id: create-payload
@@ -110,6 +128,83 @@ jobs:
           fi
           echo "Decrypt test passed!"
 
+  # Tests that the matrix output is populated for both SSM and Secrets scopes.
+  # Uses a mock AWS CLI so no real credentials are needed.
+  # Run locally with: act pull_request -j test-matrix-output
+  test-matrix-output:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install mock AWS CLI
+        run: |
+          mkdir -p /tmp/mock-aws-bin
+          cat > /tmp/mock-aws-bin/aws << 'EOF'
+          #!/bin/bash
+          # Returns a fixed JSON object, ignoring all args
+          echo '{"TEST_VAR":"hello_world","ANOTHER_VAR":"foo_bar"}'
+          EOF
+          chmod +x /tmp/mock-aws-bin/aws
+          echo "/tmp/mock-aws-bin" >> $GITHUB_PATH
+
+      - name: Verify action.yml declares matrix output
+        run: |
+          if ! grep -A10 "^outputs:" action.yml | grep -q "matrix:"; then
+            echo "::error::action.yml does not declare matrix in outputs: section"
+            exit 1
+          fi
+          echo "action.yml declares matrix output"
+
+      - name: Fetch with SSM scope
+        id: fetch-ssm
+        uses: ./
+        with:
+          region: us-east-1
+          parameter_name: "/test/param"
+          pgp_passphrase: "test-passphrase"
+
+      - name: Verify SSM matrix output
+        run: |
+          MATRIX='${{ steps.fetch-ssm.outputs.matrix }}'
+          if [[ -z "$MATRIX" ]]; then
+            echo "::error::matrix output was empty for SSM scope"
+            exit 1
+          fi
+          TEST_VAR=$(echo "$MATRIX" | jq -r '.TEST_VAR')
+          if [[ "$TEST_VAR" != "hello_world" ]]; then
+            echo "::error::TEST_VAR not correct, got: $TEST_VAR"
+            exit 1
+          fi
+          ANOTHER_VAR=$(echo "$MATRIX" | jq -r '.ANOTHER_VAR')
+          if [[ "$ANOTHER_VAR" != "foo_bar" ]]; then
+            echo "::error::ANOTHER_VAR not correct, got: $ANOTHER_VAR"
+            exit 1
+          fi
+          echo "SSM matrix output: $MATRIX"
+
+      - name: Fetch with Secrets scope
+        id: fetch-secrets
+        uses: ./
+        with:
+          region: us-east-1
+          parameter_name: "my-secret"
+          pgp_passphrase: "test-passphrase"
+          scope: Secrets
+
+      - name: Verify Secrets matrix output
+        run: |
+          MATRIX='${{ steps.fetch-secrets.outputs.matrix }}'
+          if [[ -z "$MATRIX" ]]; then
+            echo "::error::matrix output was empty for Secrets scope"
+            exit 1
+          fi
+          TEST_VAR=$(echo "$MATRIX" | jq -r '.TEST_VAR')
+          if [[ "$TEST_VAR" != "hello_world" ]]; then
+            echo "::error::TEST_VAR not correct, got: $TEST_VAR"
+            exit 1
+          fi
+          echo "Secrets matrix output: $MATRIX"
+
   # Integration test - requires AWS credentials
   # Run with: act -j test-ssm-fetch -s AWS_ACCESS_KEY_ID=xxx -s AWS_SECRET_ACCESS_KEY=xxx -s AWS_REGION=xxx -s SSM_PARAMETER_NAME=xxx
   # This job only runs on workflow_dispatch (manual trigger)
@@ -117,7 +212,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Fetch from SSM with credentials
         id: fetch
@@ -128,6 +223,17 @@ jobs:
           region: ${{ secrets.AWS_REGION }}
           parameter_name: ${{ secrets.SSM_PARAMETER_NAME }}
           pgp_passphrase: "test-passphrase"
+
+      - name: Fetch from Secrets with credentials
+        id: fetch-secrets
+        uses: ./
+        with:
+          access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          region: ${{ secrets.AWS_REGION }}
+          parameter_name: ${{ secrets.SSM_PARAMETER_NAME }}
+          pgp_passphrase: "test-passphrase"
+          scope: Secrets
 
       - name: Verify encrypted output exists
         run: |

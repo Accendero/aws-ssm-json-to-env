@@ -11,6 +11,7 @@ could potentially overwrite existing environment variables.**
   - [Fetching Parameters](#fetching-parameters)
   - [Fetching Parameters with OIDC](#fetching-parameters-with-oidc)
   - [Decrypt and exporting](#decrypt-and-exporting)
+  - [Accessing parameters directly](#accessing-parameters-directly)
   - [Inputs](#inputs)
   - [Outputs](#outputs)
 - [Examples](#examples)
@@ -32,7 +33,7 @@ The example below will fetch the parameters from SSM and create an encrypted
 string as an output for use in other jobs or steps.
 
 ```yaml
-uses: accendero/aws-ssm-json-to-env@v2
+uses: accendero/aws-ssm-json-to-env@v2.1
 id: <step id 1>
 with:
   access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -54,7 +55,7 @@ use the existing AWS session credentials.
     role-to-assume: arn:aws:iam::123456789012:role/my-github-actions-role
     aws-region: us-east-1
 
-- uses: accendero/aws-ssm-json-to-env@v2
+- uses: accendero/aws-ssm-json-to-env@v2.1
   id: <step id 1>
   with:
     region: us-east-1
@@ -68,11 +69,52 @@ The example below will decrypt a previously fetched SSM environment and export
 its variables to the current job's environment.
 
 ```yaml
-uses: accendero/aws-ssm-json-to-env@v2
+uses: accendero/aws-ssm-json-to-env@v2.1
 id: <step id 2>
 with:
   pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
   decrypt: ${{ steps.<step id 1>.outputs.encrypted_environment }}
+```
+
+### Accessing parameters directly
+
+The `matrix` output exposes all fetched parameters as a JSON object, keyed by
+parameter name. This lets you read individual values in the same job without
+going through the encrypt/decrypt cycle, or forward them to other jobs.
+
+```yaml
+# Within the same job
+- uses: accendero/aws-ssm-json-to-env@v2.1
+  id: ssm
+  with:
+    region: ${{ secrets.AWS_DEFAULT_REGION }}
+    parameter_name: "/my-project/config/cicd"
+    pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+
+- run: echo "${{ fromJSON(steps.ssm.outputs.matrix).MY_ENV_VAR }}"
+```
+
+To pass parameters to a downstream job, expose `matrix` as a job output:
+
+```yaml
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      params: ${{ steps.ssm.outputs.matrix }}
+    steps:
+      - uses: accendero/aws-ssm-json-to-env@v2.1
+        id: ssm
+        with:
+          region: ${{ secrets.AWS_DEFAULT_REGION }}
+          parameter_name: "/my-project/config/cicd"
+          pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+
+  deploy:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ fromJSON(needs.setup.outputs.params).MY_ENV_VAR }}"
 ```
 
 ### Inputs
@@ -81,16 +123,16 @@ with:
 * `secret_access_key` - AWS secret access key (optional if using OIDC or existing session)
 * `region` - AWS region (required when fetching parameters)
 * `parameter_name` - Name of the parameter to fetch (required when fetching parameters)
+* `scope` - Which store to pull from: `SSM` (default) or `Secrets`
 * `pgp_passphrase` - Passphrase to encrypt the environment variables
-* **TODO**: `parameter_version` - Version of the parameter to fetch, latest is used by default
 * `decrypt` - The value of an encrypted environment variables string. Passing this
-  in will decrypt the variables and set then in the environment for the current
+  in will decrypt the variables and set them in the environment for the current
   job.
 
 ### Outputs
 
-The only output for this action is an encrypted string of the environment variables.
-* `encrypted_environment` - Encrypted string of the environment variables
+* `encrypted_environment` - Encrypted string of the environment variables, for use with `decrypt`
+* `matrix` - JSON object of all fetched parameters, keyed by parameter name. Access individual values with `fromJSON(steps.<id>.outputs.matrix).KEY_NAME`
 
 ## Examples
 
@@ -121,9 +163,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       encrypted_environment: ${{ steps.ssm.outputs.encrypted_environment }}
+      encrypted_secrets: ${{ steps.secrets.outputs.encrypted_environment }}
     steps:
-      - uses: actions/checkout@v1
-      - uses: accendero/aws-ssm-json-to-env@v2
+      - uses: actions/checkout@v6
+      - uses: accendero/aws-ssm-json-to-env@v2.1
         id: ssm
         with:
           access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -131,17 +174,32 @@ jobs:
           region: ${{ secrets.AWS_DEFAULT_REGION }}
           parameter_name: "/my-project/config/cicd"
           pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+      - uses: accendero/aws-ssm-json-to-env@v2.1
+        id: secrets
+        with:
+          access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          region: ${{ secrets.AWS_DEFAULT_REGION }}
+          parameter_name: "/my-project/config/cicd"
+          pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+          scope: Secrets
 
   print_a_variable:
     runs-on: ubuntu-latest
     needs: setup
     steps:
-      - uses: actions/checkout@v1
-      - uses: accendero/aws-ssm-json-to-env@v2
+      - uses: actions/checkout@v6
+      - uses: accendero/aws-ssm-json-to-env@v2.1
         with:
            decrypt: ${{ needs.setup.outputs.encrypted_environment }}
            pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
       - run: echo "${{ env.MY_ENV_VAR }}, ${{ env.MY_OTHER_ENV_VAR }}"
+      - uses: accendero/aws-ssm-json-to-env@v2.1
+        with:
+          decrypt: ${{ needs.setup.outputs.encrypted_secrets }}
+          pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
+      - run: echo "${{ env.MY_SECRET_VAR }}, ${{ env.MY_OTHER_SECRET_VAR }}"
+
 ```
 
 ### Example workflow with OIDC
@@ -164,12 +222,12 @@ jobs:
     outputs:
       encrypted_environment: ${{ steps.ssm.outputs.encrypted_environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::123456789012:role/my-github-actions-role
           aws-region: us-east-1
-      - uses: accendero/aws-ssm-json-to-env@v2
+      - uses: accendero/aws-ssm-json-to-env@v2.1
         id: ssm
         with:
           region: us-east-1
@@ -180,8 +238,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: setup
     steps:
-      - uses: actions/checkout@v4
-      - uses: accendero/aws-ssm-json-to-env@v2
+      - uses: actions/checkout@v6
+      - uses: accendero/aws-ssm-json-to-env@v2.1
         with:
            decrypt: ${{ needs.setup.outputs.encrypted_environment }}
            pgp_passphrase: ${{ secrets.PGP_PASSPHRASE }}
@@ -235,8 +293,11 @@ act -j test-validation
 # Run decrypt tests (no AWS credentials needed)
 act -j test-decrypt
 
-# Run both validation and decrypt tests
-act -j test-validation -j test-decrypt
+# Run matrix output tests (no AWS credentials needed)
+act -j test-matrix-output
+
+# Run all non-integration tests
+act pull_request
 ```
 
 #### Run integration tests with AWS

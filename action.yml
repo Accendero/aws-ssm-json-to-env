@@ -19,6 +19,10 @@ inputs:
   parameter_name:
     description: 'Parameter name, e.g. /my-project/config/cicd'
     required: false
+  scope:
+    description: "Which store to pull from: 'SSM' (default) or 'Secrets'"
+    required: false
+    default: "SSM"
   pgp_passphrase:
     description: 'PGP passphrase, used for encrypting the parameters'
     required: true
@@ -30,6 +34,9 @@ outputs:
   encrypted_environment:
     description: The encrypted environment variables
     value: ${{ steps.get_environment.outputs.encrypted_environment }}
+  matrix:
+    description: "JSON object of all fetched parameters, keyed by parameter name"
+    value: ${{ steps.get_environment.outputs.matrix }}
 
 runs:
   using: 'composite'
@@ -39,6 +46,11 @@ runs:
       shell: bash
       run: |
         if [[ -z "${{ inputs.decrypt }}" ]]; then
+          # Validate scope -- either SSM or Secrets
+          if [[ "${{ inputs.scope }}" != "SSM" && "${{ inputs.scope }}" != "Secrets" ]]; then
+            echo "Error: 'scope' must be 'SSM' or 'Secrets'."
+            exit 1
+          fi
           # Fetching mode: require region and parameter_name (credentials are optional if using existing session)
           if [[ -z "${{ inputs.region }}" || -z "${{ inputs.parameter_name }}" ]]; then
             echo "::error::When fetching from SSM, region and parameter_name are required"
@@ -54,18 +66,28 @@ runs:
             exit 1
           fi
         fi
+
     - name: Collect environment
       id: get_environment
       shell: bash
       run: |
         if [[ -z "${{ inputs.decrypt }}" ]]; then
-          echo "Collecting environment from AWS SSM Parameter Store"
+          echo "Collecting environment from AWS ${{ inputs.scope }}"
           # Only set credentials if provided, otherwise use existing session (e.g., OIDC)
           [[ -n "${{ inputs.access_key_id }}" ]] && export AWS_ACCESS_KEY_ID="${{ inputs.access_key_id }}"
           [[ -n "${{ inputs.secret_access_key }}" ]] && export AWS_SECRET_ACCESS_KEY="${{ inputs.secret_access_key }}"
           export AWS_DEFAULT_REGION="${{ inputs.region }}"
-          SET_ENV=$(aws ssm get-parameter --name "${{ inputs.parameter_name }}" --with-decryption --query Parameter.Value --output text \
-            | jq -r 'keys[] as $k | "\($k)=\(.[$k])"')
+          AWS_CMD="ssm get-parameter --name"
+          AWS_PARAMS="--with-decryption --query Parameter.Value"
+          if [[ "${{ inputs.scope }}" == "Secrets" ]]; then
+            AWS_CMD="secretsmanager get-secret-value --secret-id"
+            AWS_PARAMS="--query SecretString"
+          fi
+          RAW_JSON=$(aws "$AWS_CMD" "${{ inputs.parameter_name }}" "$AWS_PARAMS" --output text)
+          JSON=$(echo "$RAW_JSON" | jq -c '.')
+          echo "::add-mask::${JSON}"
+          echo "matrix=${JSON}" >> $GITHUB_OUTPUT
+          SET_ENV=$(echo "$RAW_JSON" | jq -r 'keys[] as $k | "\($k)=\(.[$k])"')
           ENC_SET_ENV=$(gpg --symmetric --batch --passphrase "$SECRET" --output - <(echo "$SET_ENV") | base64 -w0)
           echo "encrypted_environment=$ENC_SET_ENV" >> $GITHUB_OUTPUT
         else
